@@ -1,0 +1,21 @@
+# 認証情報（絶対にコミットしない）
+credentials/
+*.json
+!gas/*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# 実データ（個人情報含む可能性あり）
+input.xlsx
+data/
+
+# OS生成ファイル
+.DS_Store
+desktop.ini
+Thumbs.db
