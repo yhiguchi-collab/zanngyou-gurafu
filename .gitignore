@@ -11,6 +11,10 @@ __pycache__/
 venv/
 .env
 
+# ブラウザプロファイル（セッション情報 - コミット禁止）
+.browser_profile/
+.mf_cookies.json
+
 # 実データ（個人情報含む可能性あり）
 input.xlsx
 data/
