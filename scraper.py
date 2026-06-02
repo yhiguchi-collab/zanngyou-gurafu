@@ -15,6 +15,7 @@ Money Forward クラウド勤怠から出勤簿データをCSVで自動ダウン
 import asyncio
 import argparse
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -87,69 +88,50 @@ async def login(page, email: str, password: str) -> None:
 async def trigger_export(page, year: int, month: int) -> None:
     """
     連携/エクスポートページでCSVの「出勤簿データ」をエクスポートする。
-    対象年月を指定月に設定し、他の設定はデフォルトのまま実行する。
+    対象年月を指定月に設定し、「設定内容でエクスポート」ボタンをクリックする。
     """
     export_url = f"{BASE_URL}/admin/settings/exporters"
     print(f"  エクスポートページへ移動...")
     await page.goto(export_url)
     await page.wait_for_load_state("domcontentloaded")
 
-    # CSVセクションの「出勤簿データ」ボタンをクリック
-    # ページには CSV/PDF 2つの「出勤簿データ」があるので、CSV側（最初の方）を選ぶ
+    # CSVセクションの「出勤簿データ」ボタンをクリック（PDF側ではなくCSV側）
     shukkin_rows = page.locator('tr:has-text("出勤簿データ")')
     csv_export_btn = shukkin_rows.first.locator(
         'button:has-text("エクスポート"), a:has-text("エクスポート")'
     )
     await csv_export_btn.click()
     print("  「出勤簿データ」エクスポートをクリック")
-    await asyncio.sleep(1)
+    await page.wait_for_load_state("domcontentloaded")
 
-    # ダイアログのスクリーンショットを保存（デバッグ用）
-    await page.screenshot(path="debug_export_dialog.png")
-
-    # 対象年月の設定
-    # Money Forward のダイアログは "YYYY/MM" 形式のテキスト or select
+    # 対象年月を前月に設定
+    # × ボタンで現在の値をクリアしてから新しい値を入力する
     year_month_str = f"{year}/{month:02d}"
-    set_ok = False
 
-    # パターン1: テキスト入力（例: "2026/05"）
-    text_input = page.locator(
-        'input[name*="year_month"], input[placeholder*="年月"], '
-        'input[placeholder*="YYYY"], input[type="month"]'
-    )
-    if await text_input.count() > 0:
-        await text_input.first.fill(year_month_str)
-        print(f"  対象年月: {year_month_str}（テキスト入力）")
-        set_ok = True
+    clear_btn = page.locator('button[aria-label="削除"], button:has-text("×"), .clear-btn').first
+    if await clear_btn.count() > 0:
+        await clear_btn.click()
+        await asyncio.sleep(0.3)
 
-    if not set_ok:
-        # パターン2: セレクトボックス（年・月 分離）
-        year_sel = page.locator('select[name*="year"], select[id*="year"]')
-        month_sel = page.locator('select[name*="month"], select[id*="month"]')
-        if await year_sel.count() > 0:
-            await year_sel.first.select_option(str(year))
-            print(f"  年: {year}")
-            set_ok = True
-        if await month_sel.count() > 0:
-            await month_sel.first.select_option(str(month))
-            print(f"  月: {month}")
-            set_ok = True
-
-    if not set_ok:
-        print("  対象年月の入力欄が見つかりませんでした。debug_export_dialog.png を確認してください。")
-
-    # 実行ボタンをクリック（出力単位・並び順・時間フォーマットはデフォルトのまま）
-    run_btn = page.locator(
-        'button:has-text("エクスポート"):visible, '
-        'button:has-text("実行"):visible, '
-        'input[type="submit"]:visible'
-    )
-    if await run_btn.count() > 0:
-        await run_btn.first.click()
-        print("  エクスポート実行ボタンをクリック")
+    # 日付入力欄を探して値をセット（"2026/05" 形式）
+    date_input = page.locator(
+        'input[type="month"], '
+        'input[name*="year_month"], '
+        'input[placeholder*="年月"]'
+    ).first
+    if await date_input.count() > 0:
+        await date_input.fill(year_month_str)
     else:
-        print("  実行ボタンが見つかりません。debug_export_dialog.png を確認してください。")
+        # フォールバック: 入力欄をクリックして直接入力
+        await date_input.click()
+        await page.keyboard.press("Control+A")
+        await page.keyboard.type(year_month_str)
 
+    print(f"  対象年月: {year_month_str}")
+
+    # 「設定内容でエクスポート」ボタンをクリック（他の設定はデフォルトのまま）
+    await page.click('button:has-text("設定内容でエクスポート")')
+    print("  「設定内容でエクスポート」をクリック")
     await asyncio.sleep(2)
 
 
@@ -234,6 +216,11 @@ def main():
     print(f"対象期間: {args.year}年{args.month}月")
     save_path = asyncio.run(run(args.year, args.month, args.headless))
     print(f"\n完了: {save_path}")
+
+    # ダウンロードしたファイルをExcelで開く
+    print("Excelで開いています...")
+    os.startfile(str(save_path))
+
     print(f"次のステップ: python main.py \"{save_path}\"")
 
 
