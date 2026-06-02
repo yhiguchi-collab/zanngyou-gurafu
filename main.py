@@ -1,16 +1,18 @@
 """
-Money Forward クラウド勤怠のExcelエクスポートを読み込み、
+Money Forward クラウド勤怠のエクスポートファイル（CSV または Excel）を読み込み、
 Google スプレッドシートへ店舗ごとに書き込む。
 
 使用方法:
-    python main.py <Excelファイルパス>
+    python main.py <ファイルパス>
 
 例:
+    python main.py downloads/attendance_202405.csv
     python main.py sample_data.xlsx
 """
 
 import sys
 import re
+import csv
 from pathlib import Path
 
 import openpyxl
@@ -51,13 +53,8 @@ def minutes_to_hhmm(minutes: int) -> str:
     return f"{minutes // 60}:{minutes % 60:02d}"
 
 
-def read_excel(filepath: str) -> list[dict]:
-    """Excelを読み込み、店舗・氏名・残業時間のレコード一覧を返す"""
-    wb = openpyxl.load_workbook(filepath)
-    ws = wb.active
-
-    headers = [str(c.value).strip() if c.value else "" for c in ws[1]]
-
+def _parse_rows(headers: list[str], rows: list[list]) -> list[dict]:
+    """ヘッダーと行データからレコード一覧を生成する"""
     def require_col(name: str) -> int:
         try:
             return headers.index(name)
@@ -69,7 +66,7 @@ def read_excel(filepath: str) -> list[dict]:
     idx_overtime = require_col(COL_OVERTIME)
 
     records = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    for row in rows:
         if not any(row):
             continue
         store = str(row[idx_store]).strip() if row[idx_store] else ""
@@ -83,8 +80,35 @@ def read_excel(filepath: str) -> list[dict]:
             "overtime_minutes": minutes,
             "overtime_hhmm": minutes_to_hhmm(minutes),
         })
-
     return records
+
+
+def read_file(filepath: str) -> list[dict]:
+    """CSV または Excel を読み込み、店舗・氏名・残業時間のレコード一覧を返す"""
+    path = Path(filepath)
+    suffix = path.suffix.lower()
+
+    if suffix == ".csv":
+        # CSV 読み込み（BOM付きUTF-8 / Shift-JIS 両対応）
+        for encoding in ("utf-8-sig", "shift-jis", "utf-8"):
+            try:
+                with open(path, newline="", encoding=encoding) as f:
+                    reader = csv.reader(f)
+                    all_rows = list(reader)
+                if all_rows:
+                    headers = [h.strip() for h in all_rows[0]]
+                    return _parse_rows(headers, all_rows[1:])
+            except (UnicodeDecodeError, StopIteration):
+                continue
+        raise ValueError(f"CSVファイルのエンコーディングを判定できませんでした: {filepath}")
+
+    else:
+        # Excel 読み込み (.xlsx / .xls)
+        wb = openpyxl.load_workbook(filepath)
+        ws = wb.active
+        headers = [str(c.value).strip() if c.value else "" for c in ws[1]]
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        return _parse_rows(headers, rows)
 
 
 # ---- Google Sheets 書き込み ----
@@ -143,7 +167,7 @@ def main():
         sys.exit(1)
 
     print(f"読み込み中: {excel_path}")
-    records = read_excel(excel_path)
+    records = read_file(excel_path)
     print(f"  → {len(records)} 件のデータを読み込みました\n")
 
     print("スプレッドシートへ書き込み中...")

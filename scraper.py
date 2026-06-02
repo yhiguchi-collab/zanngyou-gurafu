@@ -1,19 +1,15 @@
 """
-Money Forward クラウド勤怠から月別データをCSVで自動ダウンロードする。
+Money Forward クラウド勤怠から出勤簿データをCSVで自動ダウンロードする。
 
 フロー:
   1. ログイン（追加認証は初回のみ）
-  2. 連携/エクスポートページで「月別データ」をエクスポート実行
-  3. エクスポート履歴に現れたファイルをダウンロード
+  2. 連携/エクスポート → CSVファイルの「出勤簿データ」をエクスポート
+  3. 対象年月を前月に設定して実行
+  4. エクスポート履歴から最新ファイルをダウンロード
 
 使用方法:
-    python scraper.py                          # 今月分
-    python scraper.py --year 2024 --month 5    # 指定月
-    python scraper.py --headless               # ブラウザ非表示で実行（2回目以降）
-
-事前準備:
-    pip install -r requirements.txt
-    playwright install chromium
+    python scraper.py            # 前月分を自動ダウンロード
+    python scraper.py --headless # ブラウザ非表示で実行
 """
 
 import asyncio
@@ -34,15 +30,23 @@ BROWSER_PROFILE_DIR = Path(__file__).parent / ".browser_profile"
 BASE_URL = "https://attendance.moneyforward.com"
 
 
+def prev_month() -> tuple[int, int]:
+    """前月の (year, month) を返す"""
+    now = datetime.now()
+    if now.month == 1:
+        return now.year - 1, 12
+    return now.year, now.month - 1
+
+
 # ---- ログイン ----
 
 async def login(page, email: str, password: str) -> None:
-    """Money Forward ID でログインする。セッション済みなら何もしない。"""
     await page.goto(f"{BASE_URL}/")
     await page.wait_for_load_state("domcontentloaded")
 
     login_btn = page.locator(
-        'a:has-text("マネーフォワード IDでログイン"), button:has-text("マネーフォワード IDでログイン")'
+        'a:has-text("マネーフォワード IDでログイン"), '
+        'button:has-text("マネーフォワード IDでログイン")'
     )
     if await login_btn.count() == 0:
         print("  セッション有効 - ログインをスキップ")
@@ -82,46 +86,69 @@ async def login(page, email: str, password: str) -> None:
 
 async def trigger_export(page, year: int, month: int) -> None:
     """
-    連携/エクスポートページで「月別データ」のエクスポートをクリックする。
-    ダイアログが出た場合は年月を設定して実行する。
+    連携/エクスポートページでCSVの「出勤簿データ」をエクスポートする。
+    対象年月を指定月に設定し、他の設定はデフォルトのまま実行する。
     """
     export_url = f"{BASE_URL}/admin/settings/exporters"
-    print(f"  エクスポートページへ移動: {export_url}")
+    print(f"  エクスポートページへ移動...")
     await page.goto(export_url)
     await page.wait_for_load_state("domcontentloaded")
 
-    # 「月別データ」行のエクスポートボタンをクリック
-    monthly_btn = page.locator('tr:has-text("月別データ") button, tr:has-text("月別データ") a').filter(
-        has_text="エクスポート"
+    # CSVセクションの「出勤簿データ」ボタンをクリック
+    # ページには CSV/PDF 2つの「出勤簿データ」があるので、CSV側（最初の方）を選ぶ
+    shukkin_rows = page.locator('tr:has-text("出勤簿データ")')
+    csv_export_btn = shukkin_rows.first.locator(
+        'button:has-text("エクスポート"), a:has-text("エクスポート")'
     )
-    if await monthly_btn.count() == 0:
-        # フォールバック: 2番目のエクスポートボタン（従業員・月別・出勤簿の順）
-        monthly_btn = page.locator('button:has-text("エクスポート"), a:has-text("エクスポート")').nth(1)
-
-    await monthly_btn.click()
-    print("  「月別データ」エクスポートボタンをクリック")
-
-    # ダイアログ/モーダルが出た場合：年月を設定して実行
+    await csv_export_btn.click()
+    print("  「出勤簿データ」エクスポートをクリック")
     await asyncio.sleep(1)
+
+    # ダイアログのスクリーンショットを保存（デバッグ用）
     await page.screenshot(path="debug_export_dialog.png")
 
-    # 年セレクト
-    year_sel = page.locator('select[name*="year"], select[id*="year"], select:near(:text("年"))')
-    if await year_sel.count() > 0:
-        await year_sel.first.select_option(str(year))
-        print(f"  年: {year}")
+    # 対象年月の設定
+    # Money Forward のダイアログは "YYYY/MM" 形式のテキスト or select
+    year_month_str = f"{year}/{month:02d}"
+    set_ok = False
 
-    # 月セレクト
-    month_sel = page.locator('select[name*="month"], select[id*="month"], select:near(:text("月"))')
-    if await month_sel.count() > 0:
-        await month_sel.first.select_option(str(month))
-        print(f"  月: {month}")
+    # パターン1: テキスト入力（例: "2026/05"）
+    text_input = page.locator(
+        'input[name*="year_month"], input[placeholder*="年月"], '
+        'input[placeholder*="YYYY"], input[type="month"]'
+    )
+    if await text_input.count() > 0:
+        await text_input.first.fill(year_month_str)
+        print(f"  対象年月: {year_month_str}（テキスト入力）")
+        set_ok = True
 
-    # 実行ボタン（モーダル内）
-    run_btn = page.locator('button:has-text("実行"), button:has-text("エクスポート"), input[value="実行"]')
+    if not set_ok:
+        # パターン2: セレクトボックス（年・月 分離）
+        year_sel = page.locator('select[name*="year"], select[id*="year"]')
+        month_sel = page.locator('select[name*="month"], select[id*="month"]')
+        if await year_sel.count() > 0:
+            await year_sel.first.select_option(str(year))
+            print(f"  年: {year}")
+            set_ok = True
+        if await month_sel.count() > 0:
+            await month_sel.first.select_option(str(month))
+            print(f"  月: {month}")
+            set_ok = True
+
+    if not set_ok:
+        print("  対象年月の入力欄が見つかりませんでした。debug_export_dialog.png を確認してください。")
+
+    # 実行ボタンをクリック（出力単位・並び順・時間フォーマットはデフォルトのまま）
+    run_btn = page.locator(
+        'button:has-text("エクスポート"):visible, '
+        'button:has-text("実行"):visible, '
+        'input[type="submit"]:visible'
+    )
     if await run_btn.count() > 0:
         await run_btn.first.click()
-        print("  実行ボタンをクリック")
+        print("  エクスポート実行ボタンをクリック")
+    else:
+        print("  実行ボタンが見つかりません。debug_export_dialog.png を確認してください。")
 
     await asyncio.sleep(2)
 
@@ -130,34 +157,36 @@ async def trigger_export(page, year: int, month: int) -> None:
 
 async def download_from_history(page, download_dir: Path) -> Path:
     """
-    エクスポート履歴ページを開き、最新ファイルのダウンロードボタンをクリックする。
-    最大60秒ポーリングして完了を待つ。
+    エクスポート履歴ページを開き、最新ファイルをダウンロードする。
+    最大90秒ポーリングして完了を待つ。
     """
     history_url = f"{BASE_URL}/admin/export_histories"
     download_dir.mkdir(exist_ok=True)
 
-    print(f"  エクスポート履歴を確認中...")
-    for attempt in range(12):  # 最大60秒（5秒×12回）
+    print("  エクスポート完了を待機中...")
+    for attempt in range(18):  # 最大90秒（5秒×18回）
         await page.goto(history_url)
         await page.wait_for_load_state("domcontentloaded")
         await asyncio.sleep(1)
 
-        # 最新行のダウンロードボタンを取得
-        download_btn = page.locator('a:has-text("ダウンロード"), button:has-text("ダウンロード")').first
+        # 最新行のダウンロードリンクを取得
+        download_btn = page.locator(
+            'a:has-text("ダウンロード"), button:has-text("ダウンロード")'
+        ).first
         if await download_btn.count() > 0:
-            print(f"  ダウンロードボタンを発見（{attempt+1}回目）")
+            print(f"  ダウンロードリンクを発見")
             async with page.expect_download(timeout=60000) as dl_info:
                 await download_btn.click()
             download = await dl_info.value
-            filename = download.suggested_filename or "attendance_monthly.csv"
+            filename = download.suggested_filename or f"attendance_{page.url}.csv"
             save_path = download_dir / filename
             await download.save_as(save_path)
             return save_path
 
-        print(f"  エクスポート処理中... ({attempt+1}/12)")
+        print(f"  処理中... ({attempt + 1}/18)")
         await asyncio.sleep(5)
 
-    raise RuntimeError("エクスポートが60秒以内に完了しませんでした。エクスポート履歴を手動で確認してください。")
+    raise RuntimeError("エクスポートが90秒以内に完了しませんでした。")
 
 
 # ---- メイン処理 ----
@@ -180,7 +209,7 @@ async def run(year: int, month: int, headless: bool) -> Path:
             print("\n[1/3] ログイン中...")
             await login(page, EMAIL, PASSWORD)
 
-            print("\n[2/3] エクスポート実行中...")
+            print(f"\n[2/3] {year}年{month}月のエクスポートを実行中...")
             await trigger_export(page, year, month)
 
             print("\n[3/3] ダウンロード中...")
@@ -195,11 +224,11 @@ async def run(year: int, month: int, headless: bool) -> Path:
 
 
 def main():
-    now = datetime.now()
+    prev_y, prev_m = prev_month()
     parser = argparse.ArgumentParser(description="Money Forward 勤怠データ自動ダウンロード")
-    parser.add_argument("--year", type=int, default=now.year)
-    parser.add_argument("--month", type=int, default=now.month)
-    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--year", type=int, default=prev_y, help=f"対象年（デフォルト: {prev_y}）")
+    parser.add_argument("--month", type=int, default=prev_m, help=f"対象月（デフォルト: {prev_m}）")
+    parser.add_argument("--headless", action="store_true", help="ブラウザ非表示で実行")
     args = parser.parse_args()
 
     print(f"対象期間: {args.year}年{args.month}月")
