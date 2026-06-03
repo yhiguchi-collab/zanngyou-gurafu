@@ -21,6 +21,7 @@ data/
 downloads/
 sample_data.xlsx
 error_screenshot.png
+debug_*.png
 
 # OS生成ファイル
 .DS_Store
