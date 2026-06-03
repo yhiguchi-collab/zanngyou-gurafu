@@ -87,51 +87,28 @@ async def login(page, email: str, password: str) -> None:
 
 async def trigger_export(page, year: int, month: int) -> None:
     """
-    連携/エクスポートページでCSVの「出勤簿データ」をエクスポートする。
-    対象年月を指定月に設定し、「設定内容でエクスポート」ボタンをクリックする。
+    出勤簿データCSVエクスポート設定ページへ直接移動し、
+    hidden input の年・月を前月に書き換えてフォームを送信する。
     """
-    export_url = f"{BASE_URL}/admin/settings/exporters"
-    print(f"  エクスポートページへ移動...")
+    # 出勤簿データCSVエクスポートの設定ページへ直接移動
+    export_url = f"{BASE_URL}/admin/settings/exporters/daily_attendance_item_csv_exporters/new"
+    print(f"  エクスポート設定ページへ移動...")
     await page.goto(export_url)
     await page.wait_for_load_state("domcontentloaded")
+    await asyncio.sleep(1)
 
-    # CSVセクションの「出勤簿データ」ボタンをクリック（PDF側ではなくCSV側）
-    shukkin_rows = page.locator('tr:has-text("出勤簿データ")')
-    csv_export_btn = shukkin_rows.first.locator(
-        'button:has-text("エクスポート"), a:has-text("エクスポート")'
-    )
-    await csv_export_btn.click()
-    print("  「出勤簿データ」エクスポートをクリック")
-    await page.wait_for_load_state("domcontentloaded")
+    # hidden input（year / month）を前月の値に書き換える
+    # 表示上の日付ピッカーは dp__input_readonly で直接入力不可のため JS で操作
+    form = "admin_settings_exporters_daily_attendance_item_csv_exporter_form"
+    await page.evaluate(f"""
+        document.querySelector('input[name="{form}[year]"]').value  = '{year}';
+        document.querySelector('input[name="{form}[month]"]').value = '{month}';
+    """)
+    print(f"  対象年月: {year}年{month}月")
 
-    # 対象年月を前月に設定
-    # × ボタンで現在の値をクリアしてから新しい値を入力する
-    year_month_str = f"{year}/{month:02d}"
-
-    clear_btn = page.locator('button[aria-label="削除"], button:has-text("×"), .clear-btn').first
-    if await clear_btn.count() > 0:
-        await clear_btn.click()
-        await asyncio.sleep(0.3)
-
-    # 日付入力欄を探して値をセット（"2026/05" 形式）
-    date_input = page.locator(
-        'input[type="month"], '
-        'input[name*="year_month"], '
-        'input[placeholder*="年月"]'
-    ).first
-    if await date_input.count() > 0:
-        await date_input.fill(year_month_str)
-    else:
-        # フォールバック: 入力欄をクリックして直接入力
-        await date_input.click()
-        await page.keyboard.press("Control+A")
-        await page.keyboard.type(year_month_str)
-
-    print(f"  対象年月: {year_month_str}")
-
-    # 「設定内容でエクスポート」ボタンをクリック（他の設定はデフォルトのまま）
-    await page.click('button:has-text("設定内容でエクスポート")')
-    print("  「設定内容でエクスポート」をクリック")
+    # エクスポートボタン（input[type=submit]）をクリック
+    await page.click('input[type="submit"][value="エクスポート"]')
+    print("  エクスポートボタンをクリック")
     await asyncio.sleep(2)
 
 
