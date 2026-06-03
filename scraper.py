@@ -97,18 +97,30 @@ async def trigger_export(page, year: int, month: int) -> None:
     await page.wait_for_load_state("domcontentloaded")
     await asyncio.sleep(1)
 
-    # hidden input（year / month）を前月の値に書き換える
-    # 表示上の日付ピッカーは dp__input_readonly で直接入力不可のため JS で操作
-    form = "admin_settings_exporters_daily_attendance_item_csv_exporter_form"
-    await page.evaluate(f"""
-        document.querySelector('input[name="{form}[year]"]').value  = '{year}';
-        document.querySelector('input[name="{form}[month]"]').value = '{month}';
-    """)
-    print(f"  対象年月: {year}年{month}月")
+    # CSRF トークンを取得
+    csrf_token = await page.evaluate(
+        "document.querySelector('input[name=\"authenticity_token\"]').value"
+    )
 
-    # エクスポートボタン（input[type=submit]）をクリック
-    await page.click('input[type="submit"][value="エクスポート"]')
-    print("  エクスポートボタンをクリック")
+    # フォームを直接 POST（ブラウザのクッキーを自動使用）
+    # Vue の dp__input_readonly 日付ピッカーをバイパスして正確に年月を指定できる
+    form = "admin_settings_exporters_daily_attendance_item_csv_exporter_form"
+    resp = await page.request.post(
+        f"{BASE_URL}/admin/settings/exporters/daily_attendance_item_csv_exporters",
+        form={
+            "authenticity_token":                        csrf_token,
+            f"{form}[period_type]":                      "single_month",
+            f"{form}[year]":                             str(year),
+            f"{form}[month]":                            str(month),
+            f"{form}[filter_by]":                        "employee_ids",
+            f"{form}[sort_order]":                       "employee_code",
+            f"{form}[with_original_record_model_times]": "false",
+            f"{form}[with_actual_working_time]":         "false",
+            "commit":                                    "エクスポート",
+        },
+    )
+    print(f"  エクスポートリクエスト送信（HTTP {resp.status}）")
+    print(f"  対象年月: {year}年{month}月")
     await asyncio.sleep(2)
 
 
@@ -128,12 +140,10 @@ async def download_from_history(page, download_dir: Path) -> Path:
         await page.wait_for_load_state("domcontentloaded")
         await asyncio.sleep(1)
 
-        # 最新行のダウンロードリンクを取得
-        download_btn = page.locator(
-            'a:has-text("ダウンロード"), button:has-text("ダウンロード")'
-        ).first
-        if await download_btn.count() > 0:
-            print(f"  ダウンロードリンクを発見")
+        # テーブル内の「ダウンロード」ボタンを取得（サイドバーの非表示リンクを除外）
+        download_btn = page.get_by_role("button", name="ダウンロード").first
+        if await download_btn.count() > 0 and await download_btn.is_visible():
+            print(f"  ダウンロードボタンを発見")
             async with page.expect_download(timeout=60000) as dl_info:
                 await download_btn.click()
             download = await dl_info.value
